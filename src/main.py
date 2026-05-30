@@ -1,4 +1,4 @@
-from model import Model
+from model import GPT2Large
 from model import set_seed
 from model import MyOrcaGPT2
 import utils
@@ -49,20 +49,20 @@ def my_orca():
     small_prompts = ["damn no good", "i cannot believe", "you are so"]
 
     print("GPT2 Model: ")
-    my_model = Model()
+    gpt2_large = GPT2Large()
 
     # print("GPT2 MLP Code:")
     # my_model.inspect_model()
     # print("\n\n")
 
     print("========= Normal Call =========")
-    print(my_model.simple_infer(prompts=small_prompts))
+    print(gpt2_large.simple_infer(prompts=small_prompts))
     print("========= =========== =========\n\n\n")
 
     set_seed(42)
     print("========= My Orca Call =========")
     model_name = "openai-community/gpt2-large"
-    my_orca = MyOrcaGPT2(my_model.model)
+    my_orca = MyOrcaGPT2(gpt2_large.model)
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
     print(orca_inference(my_orca, tokenizer, small_prompts))
     
