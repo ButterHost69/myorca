@@ -50,11 +50,7 @@ def my_orca():
 
     print("GPT2 Model: ")
     gpt2_large = GPT2Large()
-
-    # print("GPT2 MLP Code:")
-    # my_model.inspect_model()
-    # print("\n\n")
-
+    print("Promts: ", small_prompts)
     print("========= Normal Call =========")
     print(gpt2_large.simple_infer(prompts=small_prompts))
     print("========= =========== =========\n\n\n")
@@ -64,7 +60,7 @@ def my_orca():
     model_name = "openai-community/gpt2-large"
     my_orca = MyOrcaGPT2(gpt2_large.model)
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    print(orca_inference(my_orca, tokenizer, small_prompts))
+    print("Final Output: ", orca_inference(my_orca, tokenizer, small_prompts))
     
 
 

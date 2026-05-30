@@ -190,6 +190,10 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
             attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
                 self.config._attn_implementation, eager_attention_forward
             )
+            
+            causal_mask = torch.tril(
+                torch.ones(req_len, req_len, dtype=torch.bool, device=hidden_states.device)
+            ).view(1, 1, req_len, req_len)
 
             if using_eager and self.reorder_and_upcast_attn:
                 raise ValueError("support for eager attention is not done yet :)")
@@ -203,7 +207,7 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
                     query,
                     key,
                     value,
-                    torch.ones(req_len).bool().to(hidden_states.device),
+                    causal_mask,
                     dropout= 0.0, # Because not training, so can set directly to 0
                     scaling=self.scaling,
                     **clean_kwargs,
