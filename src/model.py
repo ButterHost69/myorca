@@ -3,6 +3,7 @@ from typing import Callable
 
 from torch import nn
 from transformers.masking_utils import create_causal_mask
+from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.models.gpt2.modeling_gpt2 import eager_attention_forward
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import torch
@@ -30,7 +31,7 @@ def set_seed(seed: int = 42):
 
 set_seed(42)
 
-
+# TODO: Extract useful functions into utils and then remove Model 
 class Model:
     def __init__(self):
         self.model_name = "openai-community/gpt2-large"
@@ -90,6 +91,11 @@ class Model:
         from transformers.pytorch_utils import Conv1D
         print(inspect.getsource(Conv1D))
     
+    def inspect_mlp(self):
+        import inspect
+        attn_layer = self.model.transformer.h[0].mlp
+        print(inspect.getsource(type(attn_layer)))
+
     def inspect_attn(self):
         import inspect
         attn_layer = self.model.transformer.h[0].attn
@@ -343,10 +349,9 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
 
         # MLP Block
         self.ln_2 = pretrained_block.ln_2
-        self.c_fc = pretrained_block.mlp.c_fc
+        self.mlp_c_fc = pretrained_block.mlp.c_fc
         self.mlp_c_proj = pretrained_block.mlp.c_proj
-        self.act = pretrained_block.mlp.act
-        self.dropout = pretrained_block.mlp.dropout
+        self.mlp_act = pretrained_block.mlp.act
     
     def compute_attention(self, hidden_states, splits, **kwargs):
         """Basically the forward for the GPTAttention Class"""
@@ -433,11 +438,12 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
         hidden_states = self.ln_2(hidden_states)
         
         # MLP pipeline
-        feed_forward_hidden_states = self.mlp(hidden_states)
+        ff_hd = self.mlp_c_fc(hidden_states)
+        ff_hd = self.mlp_act(ff_hd)
+        ff_hd = self.mlp_c_proj(ff_hd)
         
         # residual connection
-        hidden_states = residual + feed_forward_hidden_states
-
+        hidden_states = residual + ff_hd
         return hidden_states
 
 class MyOrcaGPT2(nn.Module, SplitMerge):
@@ -455,6 +461,65 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
 
         self.ln_f = pretrained_model.transformer.ln_f
         self.lm_head = pretrained_model.lm_head
+    
+    @staticmethod
+    def logits_to_token(logits, temperature=1.0, top_k=50, top_p=0.9, do_sample=True):
+        """
+        logits:      [batch, seq_len, vocab_size] or [batch, vocab_size]
+        temperature: 0.0 = greedy, <1.0 = sharper, >1.0 = flatter
+        top_k:       0 to disable
+        top_p:       1.0 to disable (nucleus sampling)
+        do_sample:   False = greedy regardless of temperature
+        returns:     [batch] token ids
+        """
+        # grab last token logits if full sequence passed
+        if logits.dim() == 3:
+            logits = logits[:, -1, :]       # [batch, vocab_size]
+
+        # greedy shortcuts
+        if temperature == 0.0 or not do_sample:
+            return torch.argmax(logits, dim=-1)
+
+        # temperature scaling
+        if temperature != 1.0:
+            logits = logits / temperature
+
+        # top-k filtering
+        if top_k > 0:
+            top_k = min(top_k, logits.size(-1))
+            values, _ = torch.topk(logits, top_k, dim=-1)
+            min_val = values[:, -1].unsqueeze(-1)
+            logits = logits.masked_fill(logits < min_val, float('-inf'))
+
+        # top-p (nucleus) filtering
+        if top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+
+            # remove tokens once cumulative prob exceeds top_p
+            # shift right so the token that pushes over the threshold is kept
+            sorted_indices_to_remove = cumulative_probs - torch.softmax(sorted_logits, dim=-1) > top_p
+            sorted_logits = sorted_logits.masked_fill(sorted_indices_to_remove, float('-inf'))
+
+            # scatter back to original indexing
+            logits = torch.zeros_like(logits).scatter_(
+                dim=-1,
+                index=sorted_indices,
+                src=sorted_logits
+            )
+
+        probs = torch.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1).squeeze(-1)   # [batch]
+        return next_token
+
+
+    @staticmethod
+    def logits_to_tokens_split(logits, **kwargs):
+        split_logits = logits.squeeze(0)
+        return [
+            [MyOrcaGPT2.logits_to_token(req_logits, **kwargs).item()]
+            for req_logits in split_logits
+        ]
 
     def forward(self, inputs, splits):
         """
@@ -507,6 +572,17 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
                 position_embeds=s_pos_embeddings,
             )
         print(" * hidden state after all blocks: ", hidden_states.shape)
-
-
         
+        hidden_states = self.ln_f(hidden_states)
+        print(" * final transformer hs: ", hidden_states.shape)
+
+        end_tokens = []
+        start = 0
+        for i in splits:
+            start += i
+            end_tokens.append(start - 1)
+        print(" * final tokens idx: ", end_tokens)
+        logits = self.lm_head(hidden_states[:, end_tokens, :])
+        print(" * final logits shape: ", logits.shape)
+        return MyOrcaGPT2.logits_to_tokens_split(logits, do_sample=False)
+    

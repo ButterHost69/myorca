@@ -7,8 +7,9 @@ For the current implementation we will be using the model : "openai-community/gp
 ### What is Implemented
 
 - [ ] Iterative Scheduling
-- [ ] Selective Batching
-    - [ ] Split & Merge layers for the batching
+- [X] Selective Batching
+    - [X] Split & Merge layers for the batching
+- [ ] Verification with the traditional batching
 - [ ] KV Cacheing
 
 ### TODO:
@@ -16,11 +17,12 @@ For the current implementation we will be using the model : "openai-community/gp
 - [X] Load a Model ; Send a prompt
 - [X] Look at mergeable ops
 - [X] Find a way to add the split and merge batches / tensors 
-- [ ] Implement the whole split and merge schling
-  - [ ] Implement our own model
-  - [ ] Load the Weights of the pretrained Model
-  - [ ] Implement the split and merge inside the forward functions
-  
+- [X] Implement the whole split and merge schling
+  - [x] Implement our own model
+  - [X] Load the Weights of the pretrained Model
+  - [X] Implement the split and merge inside the forward functions
+
+- [ ] Verification with the traditional batching
 - [ ] Implement a scheduler
 - [ ] Concretely display that the whole thing works iteratively
 - [ ] Implement KV Cache
@@ -431,4 +433,20 @@ class GPT2Block(GradientCheckpointingLayer):
 ```
 
 #### GPT2MLP
+```
+class GPT2MLP(nn.Module):
+    def __init__(self, intermediate_size, config):
+        super().__init__()
+        embed_dim = config.hidden_size
+        self.c_fc = Conv1D(intermediate_size, embed_dim)
+        self.c_proj = Conv1D(embed_dim, intermediate_size)
+        self.act = ACT2FN[config.activation_function]
+        self.dropout = nn.Dropout(config.resid_pdrop)
+
+    def forward(self, hidden_states: tuple[torch.FloatTensor] | None) -> torch.FloatTensor:
+        hidden_states = self.c_fc(hidden_states)
+        hidden_states = self.act(hidden_states)
+        hidden_states = self.c_proj(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        return hidden_states
 ```
