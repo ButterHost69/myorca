@@ -331,7 +331,6 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
         - right now, no chacheing ; everything is computed ; support for only sdpa
         - input_ids: contains multiple requests
         """
-        split_input_ids = self.split_inputs(inputs["input_ids"], splits)
         if DEBUG : print(" * attn mask: ", inputs["attention_mask"].shape)
         m_input_embeddings = self.wte(inputs["input_ids"]) 
         if DEBUG : print(" * input embeddings: ", m_input_embeddings.shape)

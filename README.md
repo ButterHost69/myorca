@@ -4,6 +4,10 @@
 
 For the current implementation we will be using the model : "openai-community/gpt2-large"
 
+Also created a small presentation to explain my friend the paper at surface level: [ppt](./Orca%20Paper.pdf)
+
+Do lmk if I messed up somewhere 👍
+
 ### What is Implemented
 
 - [ ] Iterative Scheduling
