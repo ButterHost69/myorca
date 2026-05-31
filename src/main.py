@@ -46,7 +46,7 @@ def my_orca():
     set_seed(42)
     print("Hello from myorca! - def myorca()")
     prompts = ["Capital of India is", "the shortest King", "The Cat Sat on the"]
-    small_prompts = ["damn no good", "i cannot believe", "you are so"]
+    small_prompts = ["damn", "i am", "you are so"]
 
     print("GPT2 Model: ")
     gpt2_large = GPT2Large()

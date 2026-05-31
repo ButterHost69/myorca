@@ -215,10 +215,7 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
             
             attn_out_list.append(attn_output)
 
-        if DEBUG : print("     * attn output size: ", [attn_out_list[idx].shape for idx in range(len(splits))])
-        m_attn_outs    = torch.cat(attn_out_list, dim=1)    
-        m_attn_outs = m_attn_outs.reshape(*m_attn_outs.shape[:-2], -1).contiguous()
-        m_attn_outs = m_attn_outs.reshape(1, -1, 1280)
+        m_attn_outs = self.merge_inputs(attn_out_list, shape=[1, sum(splits), -1])
         if DEBUG : print("     * merged attn output shape: ", m_attn_outs.shape, "\n")
         m_attn_outs = self.c_proj(m_attn_outs)
         m_attn_outs = self.resid_dropout(m_attn_outs)            

@@ -22,9 +22,10 @@ For the current implementation we will be using the model : "openai-community/gp
   - [X] Load the Weights of the pretrained Model
   - [X] Implement the split and merge inside the forward functions
 
-- [ ] Verification with the traditional batching
+- [X] Verification with the traditional batching
 - [ ] Implement a scheduler
 - [ ] Concretely display that the whole thing works iteratively
+- [ ] Implement the scenarios from paper and compare to maybe out traditional hf model.
 - [ ] Implement KV Cache
 
 
