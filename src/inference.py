@@ -4,15 +4,21 @@ You just interact with it -- handles queueing and scheduling.
 """
 from typing import Callable
 
+import torch
 from transformers import GPT2Tokenizer
 from model import GPT2Large, MyOrcaGPT2
 from queue import Queue
 
 class Prompt():
     """Stores metadata for prompt"""
-    def __init__(self, prompt:str, max_tokens=3):
+    def __init__(self, prompt:str, max_new_tokens=3, n_attn_blocks=36):
         self.prompt = prompt
-        self.max_tokens = max_tokens
+        self.max_new_tokens = max_new_tokens
+        self.tokens_processed = 0
+
+        self.prev_kv = [None] * n_attn_blocks
+        self.processing_input = prompt # This is what will be processed, will be switched with the next token, when in decoding phase
+        
 
 class InferenceEngine():
     def __init__(self):
@@ -24,12 +30,13 @@ class InferenceEngine():
 
         self.input_queue = Queue()
         self.max_bs = 3
+        self.n_rsrv = 40 # Total kv count across all requests ; for each req -> req.n_tokens + max_new_tokens
 
 
     def _orca_tokenizer(self, prompts:list[Prompt], device):
         """ Tokenize and split for orca. Split = contains length of each request"""
         inputs = [
-            self.tokenizer(prompt.prompt, return_tensors="pt") for prompt in prompts
+            self.tokenizer(prompt.processing_input, return_tensors="pt") for prompt in prompts
         ]
 
         input_ids = [
@@ -48,14 +55,17 @@ class InferenceEngine():
             "attention_mask": merged_attn_mask
         }, splits  
     
-    def _orca_iteration(self, inputs, splits):
+    def _orca_iteration(self, inputs, splits, offset, past_kvs):
         """Takes in a batch of inputs and performs a single forward pass / iteration -> output: generated tokens"""
-        outputs = self.orca.forward(
+        outputs, kv = self.orca.forward(
             inputs,
-            splits
+            splits,
+            offset,
+            past_kvs
         )
         
-        return self.tokenizer.decode(outputs, skip_special_tokens=True)
+        # kvs -> tuple[per_req_kvs]
+        return kv, self.tokenizer.decode(outputs, skip_special_tokens=True)
     
     def process_prompt(self, prompt:str|Prompt|list[str|Prompt]):
         if isinstance(prompt, list):
@@ -103,18 +113,36 @@ class InferenceEngine():
     
         self.orca_on = True
         while self.orca_on:
-            prompts, inputs, splits = self._select_batch() # Blocking
-            outputs = self._orca_iteration(inputs, splits)
+            prompts, inputs, splits = self._select_batch() # Blocking 
+            print(" # Total Tokens Processing: ", sum(splits))
+            kvs, outputs = self._orca_iteration(
+                inputs, 
+                splits,
+                [p.tokens_processed for p in prompts],
+                [p.prev_kv for p in prompts]
+            )
+
+            # Total KV memory across all requests and layers
+            total_tokens = sum(kvs[req][0][0].shape[1] for req in range(len(kvs)))
+            k0, v0 = kvs[0][0]
+            kv_width = k0.shape[-1] + v0.shape[-1]  # concat k and v on last dim
+            print(f" # KV cache shape: (1, {total_tokens}, {kv_width})")
 
             new = []
             outs = []
             input_ids = MyOrcaGPT2.split_inputs(inputs["input_ids"], splits)
-            for p, out, inp in zip(prompts, outputs, input_ids):
+            for p, out, inp, kv in zip(prompts, outputs, input_ids, kvs):
                 # TODO: See outputs that have generated - <eos> -> return / yield those
-                if len(inp[0]) + 1 >= p.max_tokens:
+                # if len(inp[0]) + 1 >= p.max_new_tokens:
+                p.prev_kv = kv
+                p.tokens_processed += 1
+                if p.tokens_processed >= p.max_new_tokens:
                     outs.append(p.prompt + out)
                 else:
-                    new.append(p.prompt + out)
+                    # Now only process the new tokens
+                    p.processing_input = out
+                    p.prompt += out
+                    new.append(p)
 
             self.process_prompt(new)
             yield outs

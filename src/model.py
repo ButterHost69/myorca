@@ -51,7 +51,7 @@ class GPT2Large:
         # Generate text
         outputs = self.model.generate(
             **inputs,
-            max_new_tokens=1,
+            max_new_tokens=3,
             top_k=50,
             do_sample=False,   # to set temp 0, kinda fixed output
             pad_token_id=self.tokenizer.eos_token_id 
@@ -157,7 +157,7 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
         self.mlp_c_proj = pretrained_block.mlp.c_proj
         self.mlp_act = pretrained_block.mlp.act
     
-    def compute_attention(self, hidden_states, splits, **kwargs):
+    def compute_attention(self, hidden_states, splits, causal_masks, past_kvs, **kwargs):
         """Basically the forward for the GPTAttention Class"""
         m_query_states, m_key_states, m_value_states = self.c_attn(hidden_states).split(self.split_size, dim=2) # To get 3 embed dim size (split_size = embed_dim)
         if DEBUG : print("    * merged shape: ", m_query_states.shape)
@@ -173,12 +173,21 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
         
         attn_out_list = []
         clean_kwargs = {k: v for k, v in kwargs.items() 
-                        if k not in ('attention_mask', 'scaling', 'dropout')}
+                        if k not in ('attention_mask', 'scaling', 'dropout', 'past_kvs', 'causal_mask')}
         
-        for idx, req_len in enumerate(splits):
+        for idx in range(len(splits)):
             key = key_states[idx]
             value = value_states[idx]
             query = query_states[idx]
+            past_kv = past_kvs[idx][self.layer_idx]
+
+            if past_kv is not None:
+                key = torch.cat([key, past_kv[0]], dim=1)
+                value = torch.cat([value, past_kv[1]], dim=1)
+                if DEBUG: print("   * after k + k_cache: ", key.shape)
+                if DEBUG: print("   * after v + v_cache: ", value.shape) 
+
+            past_kvs[idx][self.layer_idx] = (key, value)
 
             shape_kv = (*key.shape[:-1], -1, self.head_dim)
             key = key.view(shape_kv).transpose(1, 2)
@@ -191,9 +200,7 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
                 self.config._attn_implementation, eager_attention_forward
             )
             
-            causal_mask = torch.tril(
-                torch.ones(req_len, req_len, dtype=torch.bool, device=hidden_states.device)
-            ).view(1, 1, req_len, req_len)
+            causal_mask = causal_masks[idx]
 
             if using_eager and self.reorder_and_upcast_attn:
                 raise ValueError("support for eager attention is not done yet :)")
@@ -223,14 +230,16 @@ class MyOrcaGPT2Block(nn.Module, SplitMerge):
 
         
 
-    def forward(self, hidden_states, splits, split_casual_masks, position_embeds):
+    def forward(self, hidden_states, splits, split_casual_masks, position_embeds, past_kvs):
         if DEBUG : print(f"\n * transfomer layer: {self.layer_idx}")
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
 
         attn_output = self.compute_attention(
             hidden_states,
-            splits
+            splits,
+            split_casual_masks,
+            past_kvs
         )
         
         # residual connection
@@ -259,6 +268,7 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
         self.wte = pretrained_model.transformer.wte
         self.wpe = pretrained_model.transformer.wpe
         
+        self.n_attn_blocks = 36
         self.h = nn.ModuleList([
             MyOrcaGPT2Block(config=self.config, pretrained_block=pretrained_model.transformer.h[idx], layer_idx=idx) for idx in range(36) 
         ])
@@ -266,6 +276,7 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
         self.ln_f = pretrained_model.transformer.ln_f
         self.lm_head = pretrained_model.lm_head
     
+
     @staticmethod
     def logits_to_token(logits, temperature=1.0, top_k=50, top_p=0.9, do_sample=True):
         """
@@ -325,25 +336,29 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
             for req_logits in split_logits
         ]
 
-    def forward(self, inputs, splits):
+    def forward(self, inputs, splits:list[int], offsets:list[int], past_kvs):
         """
         - single forward pass
         - right now, no chacheing ; everything is computed ; support for only sdpa
         - input_ids: contains multiple requests
+
+        - offset    = how many tokens has been processed ~ used for positioning
+        - past_kvs  = kv_cached from previous generations 
         """
         if DEBUG : print(" * attn mask: ", inputs["attention_mask"].shape)
         m_input_embeddings = self.wte(inputs["input_ids"]) 
         if DEBUG : print(" * input embeddings: ", m_input_embeddings.shape)
         
         # position embeddings — takes position indices asper split
+        # TODO: Modify to calculate 
         s_pos_embeddings = [
             self.wpe(
                 torch.arange(
                     req_len,
                     device=inputs["input_ids"].device
-                ).unsqueeze(0)
+                ).unsqueeze(0) + offset
             )
-            for req_len in splits
+            for req_len, offset in zip(splits, offsets)
         ]
         
         if DEBUG : print(" * split pos: ", [s_pos_embeddings[idx].shape for idx in range(len(splits))])
@@ -354,27 +369,30 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
 
         hidden_states = m_input_embeddings + m_pos_embeddings
         
-        start = 0
-        split_casual_masks = []
-        for idx, end in enumerate(splits):
-            causal_mask = create_causal_mask(
-                config=self.config,
-                inputs_embeds=m_input_embeddings[:,start:start+end,:],
-                attention_mask=torch.ones(end),
-                past_key_values=None,
-                position_ids=s_pos_embeddings[idx],
-            )
-            split_casual_masks.append(causal_mask)
+        split_causal_masks = []
+        if DEBUG : print(" * splits:", splits, "offsets:", offsets)
+        split_causal_masks = []
+        for idx, req_len in enumerate(splits):
+            pkv = past_kvs[idx][0]
+            actual_offset = pkv[0].shape[1] if pkv is not None else 0
+            total_len = actual_offset + req_len
+
+            full_causal = torch.ones(total_len, total_len, dtype=torch.bool, device=hidden_states.device).tril()
+            causal_mask = full_causal[actual_offset:, :].view(1, 1, req_len, total_len).contiguous()
+            split_causal_masks.append(causal_mask)
+
+        if DEBUG : print(" * num masks:", len(split_causal_masks), "shapes:", [m.shape for m in split_causal_masks])
         
-        if DEBUG : print(" * causal masks: ", split_casual_masks) # will return if attn type is sdpa --> because the sdpa handles it internally
+        if DEBUG : print(" * causal masks: ", split_causal_masks) # will return if attn type is sdpa --> because the sdpa handles it internally
 
         # input_ids, splits, split_casual_masks
         for i, block in enumerate(self.h):
             hidden_states = block(
                 hidden_states =hidden_states,
                 splits = splits,
-                split_casual_masks = causal_mask,
+                split_casual_masks = split_causal_masks,
                 position_embeds=s_pos_embeddings,
+                past_kvs=past_kvs
             )
         if DEBUG : print(" * hidden state after all blocks: ", hidden_states.shape)
         
@@ -389,5 +407,5 @@ class MyOrcaGPT2(nn.Module, SplitMerge):
         if DEBUG : print(" * final tokens idx: ", end_tokens)
         logits = self.lm_head(hidden_states[:, end_tokens, :])
         if DEBUG : print(" * final logits shape: ", logits.shape)
-        return MyOrcaGPT2.logits_to_tokens_split(logits, do_sample=False)
+        return MyOrcaGPT2.logits_to_tokens_split(logits, do_sample=False), past_kvs
     

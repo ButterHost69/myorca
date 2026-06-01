@@ -11,24 +11,34 @@ Do lmk if I messed up somewhere 👍
 ### What is Implemented
 
 - [ ] Iterative Scheduling
-- [X] Selective Batching
-    - [X] Split & Merge layers for the batching
+- [x] Selective Batching
+  - [x] Split & Merge layers for the batching
 - [ ] Verification with the traditional batching
-- [ ] KV Cacheing
+- [X] KV Cacheing
 
 ### TODO:
 
-- [X] Load a Model ; Send a prompt
-- [X] Look at mergeable ops
-- [X] Find a way to add the split and merge batches / tensors 
-- [X] Implement the whole split and merge schling
+- [x] Load a Model ; Send a prompt
+- [x] Look at mergeable ops
+- [x] Find a way to add the split and merge batches / tensors
+- [x] Implement the whole split and merge schling
   - [x] Implement our own model
-  - [X] Load the Weights of the pretrained Model
-  - [X] Implement the split and merge inside the forward functions
+  - [x] Load the Weights of the pretrained Model
+  - [x] Implement the split and merge inside the forward functions
 
-- [X] Verification with the traditional batching
-- [X] Implement a scheduler
-    - [ ] Implement the KV count part
+- [x] Verification with the traditional batching
+- [x] Implement a scheduler
+  - [ ] Implement the KV count part
 - [ ] Concretely display that the whole thing works iteratively
 - [ ] Implement the scenarios from paper and compare to maybe out traditional hf model.
-- [ ] Implement KV Cache
+- [X] Implement KV Cache
+
+#### What shall i do ?
+
+<!-- - Look into how kv is managed  -->
+<!-- - Create a plan to implement -->
+<!-- - Modify existing code to accomodate it -->
+
+- modify the \_select_batch(), to now be mindful of it
+
+- let ig gpt generate the 2 load scenarios -- remmeber to use the poisson generation or something
