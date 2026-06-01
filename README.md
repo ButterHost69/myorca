@@ -10,7 +10,7 @@ Do lmk if I messed up somewhere 👍
 
 ### What is Implemented
 
-- [ ] Iterative Scheduling
+- [ ] Iterative Scheduling -> implemented partially ; not working rn
 - [x] Selective Batching
   - [x] Split & Merge layers for the batching
 - [ ] Verification with the traditional batching

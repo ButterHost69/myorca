@@ -14,6 +14,7 @@ class Prompt():
     def __init__(self, prompt:str, max_new_tokens=3, n_attn_blocks=36):
         self.prompt = prompt
         self.max_new_tokens = max_new_tokens
+        self.initial_tokens = 0 # Set during tokenization
         self.tokens_processed = 0
 
         self.prev_kv = [None] * n_attn_blocks
@@ -30,7 +31,8 @@ class InferenceEngine():
 
         self.input_queue = Queue()
         self.max_bs = 3
-        self.n_rsrv = 40 # Total kv count across all requests ; for each req -> req.n_tokens + max_new_tokens
+        self.n_rsrv = 0 # Current KV slots reserved
+        self.kv_slots = 10 # Total kv count across all requests ; for each req -> req.n_tokens + max_new_tokens
 
 
     def _orca_tokenizer(self, prompts:list[Prompt], device):
@@ -96,11 +98,20 @@ class InferenceEngine():
                 break
             
             req = self.input_queue.get() # Blocks till fetched value
+            if req.tokens_processed == 0:
+                new_n_rsrv = req.initial_tokens + req.max_new_tokens
+                if new_n_rsrv > self.kv_slots:
+                    break    
+                self.n_rsrv = new_n_rsrv
+             
             batch.append(req)
             if len(batch) == self.max_bs:
                 break
-        tokenized = self._orca_tokenizer(batch, "cuda")
-        return batch, tokenized[0], tokenized[1]
+
+        (tokenized, splits) = self._orca_tokenizer(batch, "cuda")
+        for p,s in zip(batch, splits):
+            p.initial_tokens = s
+        return batch, tokenized, splits
 
 
     def start_orca(self, post_iter_hook:Callable=None,yield_mode=False):
@@ -126,18 +137,17 @@ class InferenceEngine():
             total_tokens = sum(kvs[req][0][0].shape[1] for req in range(len(kvs)))
             k0, v0 = kvs[0][0]
             kv_width = k0.shape[-1] + v0.shape[-1]  # concat k and v on last dim
-            print(f" # KV cache shape: (1, {total_tokens}, {kv_width})")
+            print(f" # KV cache shape: (1, {total_tokens}, {len(self.orca.h)}, {kv_width})")
 
             new = []
             outs = []
-            input_ids = MyOrcaGPT2.split_inputs(inputs["input_ids"], splits)
-            for p, out, inp, kv in zip(prompts, outputs, input_ids, kvs):
+            for p, out, kv in zip(prompts, outputs, kvs):
                 # TODO: See outputs that have generated - <eos> -> return / yield those
-                # if len(inp[0]) + 1 >= p.max_new_tokens:
                 p.prev_kv = kv
                 p.tokens_processed += 1
                 if p.tokens_processed >= p.max_new_tokens:
                     outs.append(p.prompt + out)
+                    self.n_rsrv -= p.initial_tokens + p.max_new_tokens
                 else:
                     # Now only process the new tokens
                     p.processing_input = out
